@@ -1,0 +1,10 @@
+Ini, TOML
+[webservers]
+web-server ansible_host=<WEB_SERVER_PUBLIC_IP>
+
+[dbservers]
+db-server ansible_host=<DB_SERVER_PRIVATE_IP> ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q ubuntu@<WEB_SERVER_PUBLIC_IP> -i ~/.ssh/your-aws-key.pem -o StrictHostKeyChecking=no"'
+
+[all:children]
+webservers
+dbservers

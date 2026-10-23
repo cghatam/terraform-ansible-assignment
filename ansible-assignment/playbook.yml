@@ -1,0 +1,154 @@
+---
+# --- PART A: DATABASE SERVER CONFIGURATION (Private Subnet) ---
+- hosts: dbservers
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Import MongoDB GPG Key
+      shell: curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg
+
+    - name: Add MongoDB Repository
+      copy:
+        content: "deb [ arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse"
+        dest: /etc/apt/sources.list.d/mongodb-org-7.0.list
+
+    - name: Install MongoDB
+      apt:
+        name: mongodb-org
+        state: present
+        update_cache: yes
+
+    - name: Start and Enable MongoDB
+      service:
+        name: mongod
+        state: started
+        enabled: yes
+
+    - name: Bind MongoDB to local and private network interfaces (Security Hardening)
+      lineinfile:
+        path: /etc/mongod.conf
+        regexp: '^  bindIp:'
+        line: '  bindIp: 127.0.0.1,{{ ansible_default_ipv4.address }}'
+      notify: Restart MongoDB
+
+  handlers:
+    - name: Restart MongoDB
+      service:
+        name: mongod
+        state: restarted
+
+
+# --- PART B: WEB SERVER CONFIGURATION & APP DEPLOYMENT (Public Subnet) ---
+- hosts: webservers
+  become: yes
+  vars:
+    repo_url: "https://github.com/your-username/your-mern-repo.git"
+    db_host: "<DB_SERVER_PRIVATE_IP>"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Git, Nginx, and Build Essentials
+      apt:
+        name:
+          - git
+          - nginx
+          - build-essential
+        state: present
+
+    - name: Setup Node.js 20.x repository
+      shell: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+
+    - name: Install PM2 process manager globally
+      npm:
+        name: pm2
+        global: yes
+
+    - name: Clone MERN application repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: /var/www/mern-app
+        version: main
+        force: yes
+
+    - name: Install backend dependencies
+      npm:
+        path: /var/www/mern-app/backend
+
+    - name: Install frontend dependencies and build React app
+      shell: |
+        npm install
+        npm run build
+      args:
+        chdir: /var/www/mern-app/frontend
+
+    - name: Create Backend Environment File (.env)
+      template:
+        src: templates/env.j2
+        dest: /var/www/mern-app/backend/.env
+
+    - name: Start Node.js Backend using PM2
+      community.general.pm2:
+        name: mern-backend
+        cwd: /var/www/mern-app/backend
+        script: server.js
+        state: started
+        restart: yes
+
+    - name: Configure Nginx Reverse Proxy
+      template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/sites-available/default
+      notify: Restart Nginx
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+
+# --- PART C: SECURITY HARDENING (All Servers) ---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Enable UFW Firewall
+      ufw:
+        state: enabled
+        policy: deny
+
+    - name: Allow SSH through UFW
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Allow HTTP (Port 80) on Web Server
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+      when: inventory_hostname in groups['webservers']
+
+    - name: Disable Root Login via SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: Restart SSH
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted
